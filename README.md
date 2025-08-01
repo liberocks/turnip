@@ -7,6 +7,7 @@ A secure WebRTC signaling server written in Go with JWT authentication and Redis
 - **JWT Authentication**: Secure WebSocket connections using JWT tokens
 - **Multi-Instance Support**: Redis-based distributed signaling across multiple server instances
 - **Room-based Communication**: Clients can join specific rooms for isolated signaling
+- **Room Lifecycle Management**: Automatic room disbandment events when the last member leaves
 - **WebSocket Support**: Real-time bidirectional communication
 - **Redis Pub/Sub**: Distributed messaging between server instances
 - **Prometheus Metrics**: Comprehensive metrics for monitoring and observability
@@ -23,6 +24,46 @@ The server supports multi-instance deployment where clients can connect to diffe
 - **Distributed State**: Client and room information is stored in Redis with TTL
 - **Instance Identification**: Each server instance has a unique ID to prevent message loops
 - **Automatic Cleanup**: Expired client sessions are automatically cleaned up
+
+## Room Lifecycle Management
+
+### Room Disbandment
+
+When the last member leaves a room, the server automatically sends a `room_disbanded` event to all remaining clients before the room is removed. This allows clients to gracefully handle room cleanup and notify users appropriately.
+
+#### Event Structure
+
+```json
+{
+  "type": "room_disbanded",
+  "data": {
+    "room": "room-name",
+    "reason": "last_member_left"
+  }
+}
+```
+
+#### Event Flow
+
+1. Client leaves a room (WebSocket disconnection or explicit leave)
+2. Server checks if this was the last member in the room
+3. If room becomes empty, server sends `room_disbanded` event to all instances
+4. All connected clients in other instances receive the disbandment notification
+5. Room data is cleaned up from Redis
+
+This feature ensures that clients can:
+- Display appropriate notifications when rooms are closed
+- Clean up local room state
+- Redirect users to lobby or other rooms
+- Log room lifecycle events for analytics
+
+#### Testing Room Disbandment
+
+To test the room disbanded feature, see [TESTING_ROOM_DISBANDED.md](TESTING_ROOM_DISBANDED.md) for detailed instructions, or run:
+
+```bash
+./demo_room_disbanded.sh
+```
 
 ## Quick Start
 

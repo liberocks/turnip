@@ -15,6 +15,46 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// StickySessionMiddleware implements Fly.io sticky sessions using fly-replay header
+func StickySessionMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Check if the server runs on Fly.io
+		flyMachineID := os.Getenv("FLY_MACHINE_ID")
+		if flyMachineID == "" {
+			// Not running on Fly.io, proceed normally
+			next(w, r)
+			return
+		}
+
+		// Check for existing session cookie
+		cookie, err := r.Cookie("fly-machine-id")
+		if err != nil || cookie.Value == "" {
+			// First request in session, set cookie to current machine
+			http.SetCookie(w, &http.Cookie{
+				Name:     "fly-machine-id",
+				Value:    flyMachineID,
+				MaxAge:   6 * 24 * 60 * 60, // 6 days
+				HttpOnly: true,
+				Path:     "/",
+				SameSite: http.SameSiteLaxMode,
+			})
+			next(w, r)
+			return
+		}
+
+		// Check if request should be on this machine
+		if cookie.Value != flyMachineID {
+			// Request should be on different machine, replay it
+			w.Header().Set("Fly-Replay", fmt.Sprintf("instance=%s", cookie.Value))
+			w.WriteHeader(http.StatusTemporaryRedirect)
+			return
+		}
+
+		// Request is on correct machine, proceed
+		next(w, r)
+	}
+}
+
 func main() {
 	// Initialize configuration
 	config := GetConfig()
@@ -28,7 +68,7 @@ func main() {
 	}
 
 	log.Info().
-		Str("service", "turnip-signaling").
+		Str("service", "turnip").
 		Str("version", config.Version).
 		Str("branch", config.Branch).
 		Str("built_at", config.BuiltAt).
@@ -76,22 +116,22 @@ func main() {
 
 	// Setup routes
 	http.HandleFunc("/health", HealthHandler)
-	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/ws", StickySessionMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		WebSocketHandler(hub, w, r)
-	})
+	}))
 
 	if config.Env == "development" {
 		// Token generation endpoint for testing
-		http.HandleFunc("/generate-token", TokenHandler)
+		http.HandleFunc("/generate-token", StickySessionMiddleware(TokenHandler))
 
-		// Serve test client
-		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// Serve test client with sticky sessions
+		http.HandleFunc("/", StickySessionMiddleware(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/" {
-				http.ServeFile(w, r, "test-client.html")
+				http.ServeFile(w, r, "client.html")
 			} else {
 				http.NotFound(w, r)
 			}
-		})
+		}))
 	}
 
 	// Start server
@@ -170,7 +210,7 @@ func configureLogging(level string) {
 		// Pure JSON output for production
 		log.Logger = zerolog.New(os.Stdout).With().
 			Timestamp().
-			Str("service", "turnip-signaling").
+			Str("service", "turnip").
 			Logger()
 	} else {
 		// Pretty console output for development with JSON structure available
@@ -181,7 +221,7 @@ func configureLogging(level string) {
 		}
 		log.Logger = zerolog.New(consoleWriter).With().
 			Timestamp().
-			Str("service", "turnip-signaling").
+			Str("service", "turnip").
 			Logger()
 	}
 

@@ -1,25 +1,32 @@
 # Build stage
-FROM golang:1.21-alpine AS builder
+FROM golang:1.23-alpine AS builder
 
 # Set working directory
 WORKDIR /app
 
-# Install build dependencies
-RUN apk add --no-cache git
+# Install build dependencies and tools
+RUN apk add --no-cache git ca-certificates tzdata
 
-# Copy go mod files
+# Set environment variables for Go modules
+ENV GO111MODULE=on
+ENV GOPROXY=https://proxy.golang.org,direct
+ENV GOSUMDB=sum.golang.org
+
+# Copy go mod files first for better layer caching
 COPY go.mod go.sum ./
 
-# Download dependencies
-RUN go mod download
+# Download dependencies with retries
+RUN go mod download && go mod verify
 
 # Copy source code and static files
 COPY src/ ./src/
-COPY test-client.html ./
-COPY go.mod go.sum ./
+COPY client.html ./
 
-# Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o turnip-signaling ./src
+# Build the application with verbose output
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -ldflags='-w -s -extldflags "-static"' \
+    -a -installsuffix cgo \
+    -o turnip ./src
 
 # Runtime stage
 FROM alpine:latest
@@ -35,10 +42,10 @@ RUN addgroup -g 1001 -S appgroup && \
 WORKDIR /app
 
 # Copy binary from builder stage
-COPY --from=builder /app/turnip-signaling .
+COPY --from=builder /app/turnip .
 
 # Copy test client (optional)
-COPY --from=builder /app/test-client.html .
+COPY --from=builder /app/client.html .
 
 # Change ownership to non-root user
 RUN chown -R appuser:appgroup /app
@@ -54,4 +61,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:5004/health || exit 1
 
 # Run the application
-CMD ["./turnip-signaling"]
+CMD ["./turnip"]

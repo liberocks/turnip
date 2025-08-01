@@ -3,7 +3,7 @@ ifneq (,$(wildcard ./.env))
     export
 endif
 
-BINARY=turnip-signaling
+BINARY=turnip
 .PHONY: build format dev help test clean docker docker-run
 
 dev:

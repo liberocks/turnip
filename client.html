@@ -43,8 +43,21 @@
       .data {
         background-color: #f0f8e6;
       }
+      .sent {
+        background-color: #e8f4f8;
+        border-left: 4px solid #0d6efd;
+      }
+      .received {
+        background-color: #f0f8e6;
+        border-left: 4px solid #198754;
+      }
       .error {
         background-color: #ffe6e6;
+      }
+      .disbanded {
+        background-color: #fff3cd;
+        border: 1px solid #ffeaa7;
+        color: #856404;
       }
       .status {
         padding: 5px;
@@ -111,6 +124,24 @@
         style="width: 300px"
       />
       <button onclick="sendData()">Send Data</button>
+      <br />
+      <button
+        onclick="disbandRoom()"
+        style="
+          all: unset;
+          background-color: #dc3545;
+          color: white;
+          margin-top: 10px;
+          padding-left: 16px;
+          padding-right: 16px;
+          padding-top: 8px;
+          padding-bottom: 8px;
+          border-radius: 8px;
+        "
+      >
+        Disband Room
+      </button>
+      <br />
     </div>
 
     <div class="container">
@@ -228,7 +259,7 @@
             // Send join message
             const joinMessage = {
               type: "join",
-              username: username,
+              user_id: username, // Server expects user_id, not username
               room: room,
             };
             ws.send(JSON.stringify(joinMessage));
@@ -253,10 +284,33 @@
                   `User ${message.data.username} left the room`,
                   "error"
                 );
+              } else if (message.type === "room_disbanded") {
+                const room = message.data.room || "unknown";
+                const reason = message.data.reason || "unknown reason";
+                addMessage(
+                  `🚪 Room "${room}" has been disbanded (${reason})`,
+                  "disbanded"
+                );
+                addMessage(
+                  `Event details: ${JSON.stringify(message.data)}`,
+                  "system"
+                );
+                // Automatically disconnect when room is disbanded
+                setTimeout(() => {
+                  if (ws && ws.readyState === WebSocket.OPEN) {
+                    addMessage(
+                      "Disconnecting due to room disbandment...",
+                      "system"
+                    );
+                    disconnect();
+                  }
+                }, 3000);
               } else if (message.type === "data") {
                 addMessage(
-                  `Data received: ${JSON.stringify(message.data)}`,
-                  "data"
+                  `📨 Data received from ${
+                    message.data.sender || "unknown"
+                  }: ${JSON.stringify(message.data.content || message.data)}`,
+                  "received"
                 );
               } else {
                 addMessage(`Received: ${JSON.stringify(message)}`, "system");
@@ -303,14 +357,52 @@
           return;
         }
 
+        const username = document.getElementById("username").value;
         const message = {
           type: "data",
-          data: data,
+          data: {
+            content: data,
+            sender: username,
+            timestamp: new Date().toISOString(),
+          },
         };
 
         ws.send(JSON.stringify(message));
-        addMessage(`Sent: ${data}`, "data");
+        addMessage(`📤 Sent: ${data}`, "sent");
         dataInput.value = "";
+      }
+
+      function disbandRoom() {
+        if (!isConnected || !ws || ws.readyState !== WebSocket.OPEN) {
+          addMessage("Not connected to server", "error");
+          return;
+        }
+
+        const room = document.getElementById("room").value;
+        const username = document.getElementById("username").value;
+
+        if (!room) {
+          addMessage("No room to disband", "error");
+          return;
+        }
+
+        if (
+          confirm(
+            `Are you sure you want to disband room "${room}"? This will force all users to leave the room.`
+          )
+        ) {
+          const message = {
+            type: "disband_room",
+            room: room,
+            username: username,
+          };
+
+          ws.send(JSON.stringify(message));
+          addMessage(
+            `🚪 Sent room disbandment request for room: ${room}`,
+            "system"
+          );
+        }
       }
 
       function clearMessages() {

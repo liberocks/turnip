@@ -35,6 +35,7 @@ type JoinMessage struct {
 
 type DataMessage struct {
 	Username string      `json:"username"`
+	UserID   string      `json:"user_id"`
 	Room     string      `json:"room"`
 	Data     interface{} `json:"data"`
 }
@@ -51,7 +52,8 @@ var upgrader = websocket.Upgrader{
 func (c *Client) readPump() {
 	defer func() {
 		c.Hub.Unregister <- c
-		if err := c.Conn.Close(); err != nil {
+		// Close connection only if it's not already closed
+		if err := c.Conn.Close(); err != nil && !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 			log.Error().Err(err).Msg("Failed to close WebSocket connection in readPump")
 		}
 	}()
@@ -73,18 +75,19 @@ func (c *Client) readPump() {
 		if msgType, ok := message["type"].(string); ok {
 			// Record message type specific metrics
 			RecordMessageReceived(Conf.Realm, msgType)
-			
+
 			switch msgType {
 			case "join":
 				// Handle join message
-				if username, ok := message["username"].(string); ok {
+				if userID, ok := message["user_id"].(string); ok {
 					if room, ok := message["room"].(string); ok {
-						c.Username = username
+						c.UserID = userID
+						c.Username = userID // Use userID as username
 						c.Room = room
 						c.Hub.Register <- c
 						RecordRoomJoin(Conf.Realm)
 						log.Info().
-							Str("username", username).
+							Str("userID", userID).
 							Str("room", room).
 							Msg("Client requested to join room")
 					}
@@ -92,9 +95,30 @@ func (c *Client) readPump() {
 
 			case "data":
 				// Handle data message
+				if c.Room == "" || c.UserID == "" {
+					log.Warn().
+						Str("userID", c.UserID).
+						Str("room", c.Room).
+						Msg("Client attempted to send data without being in a room")
+					// Send error message back to client
+					errorMsg := map[string]interface{}{
+						"type":  "error",
+						"error": "You must join a room before sending data",
+					}
+					if errorData, err := json.Marshal(errorMsg); err == nil {
+						select {
+						case c.Send <- errorData:
+						default:
+							// Channel is full, skip
+						}
+					}
+					continue
+				}
+
 				if data, ok := message["data"]; ok {
 					log.Info().
-						Str("username", c.Username).
+						Str("userID", c.UserID).
+						Str("room", c.Room).
 						Interface("data", data).
 						Msg("Client sent data")
 
@@ -114,6 +138,80 @@ func (c *Client) readPump() {
 						Sender: c,
 					}
 				}
+
+			case "disband_room":
+				// Handle room disbandment request
+				if c.Room == "" || c.UserID == "" {
+					log.Warn().
+						Str("userID", c.UserID).
+						Str("room", c.Room).
+						Msg("Client attempted to disband room without being in a room")
+					// Send error message back to client
+					errorMsg := map[string]interface{}{
+						"type":  "error",
+						"error": "You must be a member of a room to disband it",
+					}
+					if errorData, err := json.Marshal(errorMsg); err == nil {
+						select {
+						case c.Send <- errorData:
+						default:
+							// Channel is full, skip
+						}
+					}
+					continue
+				}
+
+				// Verify the client is actually a member of the room by checking if their client key exists
+				isMember, err := c.Hub.IsUserMemberOfRoom(c.Room, c.UserID)
+				if err != nil {
+					log.Error().Err(err).
+						Str("userID", c.UserID).
+						Str("room", c.Room).
+						Msg("Failed to verify room membership for disbandment")
+					// Send error message back to client
+					errorMsg := map[string]interface{}{
+						"type":  "error",
+						"error": "Failed to verify room membership",
+					}
+					if errorData, err := json.Marshal(errorMsg); err == nil {
+						select {
+						case c.Send <- errorData:
+						default:
+							// Channel is full, skip
+						}
+					}
+					continue
+				}
+
+				if !isMember {
+					log.Warn().
+						Str("userID", c.UserID).
+						Str("room", c.Room).
+						Str("username", c.Username).
+						Msg("Client attempted to disband room they are not a member of")
+					// Send error message back to client
+					errorMsg := map[string]interface{}{
+						"type":  "error",
+						"error": "You are not a member of this room",
+					}
+					if errorData, err := json.Marshal(errorMsg); err == nil {
+						select {
+						case c.Send <- errorData:
+						default:
+							// Channel is full, skip
+						}
+					}
+					continue
+				}
+
+				log.Info().
+					Str("userID", c.UserID).
+					Str("room", c.Room).
+					Str("username", c.Username).
+					Msg("Client requested room disbandment")
+
+				// Send room disbanded event to all clients in the room
+				c.Hub.DisbandRoom(c.Room, "user_requested")
 			}
 		}
 	}
@@ -122,7 +220,8 @@ func (c *Client) readPump() {
 // writePump pumps messages from the hub to the websocket connection
 func (c *Client) writePump() {
 	defer func() {
-		if err := c.Conn.Close(); err != nil {
+		// Close connection only if it's not already closed
+		if err := c.Conn.Close(); err != nil && !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 			log.Error().Err(err).Msg("Failed to close WebSocket connection in writePump")
 		}
 	}()
@@ -177,7 +276,7 @@ func HealthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	response := map[string]string{
 		"status":  "healthy",
-		"service": "turnip-signaling",
+		"service": "turnip",
 		"version": Conf.Version,
 	}
 	if err := json.NewEncoder(w).Encode(response); err != nil {

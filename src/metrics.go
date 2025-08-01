@@ -408,7 +408,7 @@ func StartMetricsServer(config *Config) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		info := `{
-			"service": "turnip-signaling",
+			"service": "turnip",
 			"version": "` + config.Version + `",
 			"realm": "` + config.Realm + `",
 			"threads": ` + strconv.Itoa(config.ThreadNum) + `,

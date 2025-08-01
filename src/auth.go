@@ -24,7 +24,7 @@ type Claims struct {
 // AuthenticateWebSocket validates JWT token for WebSocket connection
 func AuthenticateWebSocket(r *http.Request) (string, string, string, error) {
 	start := time.Now()
-	
+
 	// Get token from query parameter for WebSocket (since headers are limited)
 	tokenString := r.URL.Query().Get("token")
 	if tokenString == "" {
@@ -160,7 +160,7 @@ func GenerateToken(username, userID, email string) (string, error) {
 		Type:       "ACCESS_TOKEN",
 		Realm:      Conf.Realm,
 		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer: "turnip-signaling",
+			Issuer: "turnip",
 		},
 	}
 
