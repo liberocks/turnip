@@ -9,6 +9,7 @@ A secure WebRTC signaling server written in Go with JWT authentication and Redis
 - **Room-based Communication**: Clients can join specific rooms for isolated signaling
 - **WebSocket Support**: Real-time bidirectional communication
 - **Redis Pub/Sub**: Distributed messaging between server instances
+- **Prometheus Metrics**: Comprehensive metrics for monitoring and observability
 - **Configurable**: Environment-based configuration
 - **Logging**: Structured logging with zerolog
 - **Health Checks**: Built-in health check endpoint
@@ -101,4 +102,41 @@ make build
 | `THREAD_NUM` | `2*CPU_COUNT` | Number of threads |
 | `ENVIRONMENT` | `` | Environment (production for JSON logs) |
 | `REALM` | `development` | Authentication realm for multi-tenant setups |
+| `ENABLE_METRICS` | `true` | Enable Prometheus metrics |
+| `METRICS_PORT` | `9090` | Metrics server port |
+| `METRICS_AUTH` | `none` | Metrics authentication (`none`, `basic`) |
+| `METRICS_USERNAME` | `` | Basic auth username (if `METRICS_AUTH=basic`) |
+| `METRICS_PASSWORD` | `` | Basic auth password (if `METRICS_AUTH=basic`) |
+| `METRICS_BIND_IP` | `0.0.0.0` | Metrics server bind address |
+
+## Monitoring and Metrics
+
+The server provides comprehensive Prometheus metrics for monitoring:
+
+- **Authentication metrics**: Success rates, failures, and latency
+- **Connection metrics**: Active connections, message throughput
+- **WebRTC signaling metrics**: Room joins/leaves, signaling message types
+- **System metrics**: Memory usage, goroutines, garbage collection
+- **Redis metrics**: Operation latency, error rates
+
+### Metrics Endpoints
+
+- `http://localhost:9090/metrics` - Prometheus metrics
+- `http://localhost:9090/health` - Health check
+- `http://localhost:9090/info` - Server information
+
+### Example Monitoring Setup
+
+```bash
+# Start server with metrics enabled
+ENABLE_METRICS=true METRICS_AUTH=basic METRICS_USERNAME=admin METRICS_PASSWORD=secret ./tmp/main
+
+# Test metrics endpoint
+curl -u admin:secret http://localhost:9090/metrics
+
+# Run test script to generate sample metrics
+./test_metrics.sh
+```
+
+For detailed metrics documentation, see [METRICS.md](METRICS.md).
  

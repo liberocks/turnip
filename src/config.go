@@ -27,6 +27,14 @@ type Config struct {
 	RedisPassword string `mapstructure:"REDIS_PASSWORD"`
 	RedisDB       int    `mapstructure:"REDIS_DB"`
 	InstanceID    string `mapstructure:"INSTANCE_ID"`
+
+	// Metrics configuration
+	EnableMetrics   bool   `mapstructure:"ENABLE_METRICS"`
+	MetricsPort     int    `mapstructure:"METRICS_PORT"`
+	MetricsAuth     string `mapstructure:"METRICS_AUTH"`     // "none", "basic"
+	MetricsUsername string `mapstructure:"METRICS_USERNAME"` // For basic auth
+	MetricsPassword string `mapstructure:"METRICS_PASSWORD"` // For basic auth
+	MetricsBindIP   string `mapstructure:"METRICS_BIND_IP"`  // IP to bind metrics server
 }
 
 var (
@@ -44,6 +52,10 @@ func GetConfig() *Config {
 	viper.SetDefault("REDIS_DB", 0)
 	viper.SetDefault("ENV", "development")
 	viper.SetDefault("REALM", "development")
+	viper.SetDefault("ENABLE_METRICS", true)
+	viper.SetDefault("METRICS_PORT", 9090)
+	viper.SetDefault("METRICS_AUTH", "none")
+	viper.SetDefault("METRICS_BIND_IP", "0.0.0.0")
 
 	// Generate instance ID if not provided
 	if os.Getenv("INSTANCE_ID") == "" {

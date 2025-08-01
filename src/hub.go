@@ -83,6 +83,14 @@ func NewHub(redisClient *redis.Client, instanceID string) *Hub {
 	return hub
 }
 
+// getRedisResult converts an error to a result string for metrics
+func getRedisResult(err error) string {
+	if err != nil {
+		return "error"
+	}
+	return "success"
+}
+
 // Run starts the Redis hub
 func (h *Hub) Run() {
 	// Start Redis pub/sub message handler
@@ -128,18 +136,27 @@ func (h *Hub) registerClient(client *Client) {
 	clientKey := fmt.Sprintf("client:%s:%s", client.Room, client.Username)
 	clientData, _ := json.Marshal(clientInfo)
 
+	start := time.Now()
 	err := h.RedisClient.Set(h.ctx, clientKey, clientData, 30*time.Second).Err()
+	RecordRedisOperation("set", getRedisResult(err), time.Since(start))
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to store client info in Redis")
+		RecordRedisError("set", "store_client_info")
 	}
 
 	// Add client to room set
 	roomKey := fmt.Sprintf("room:%s", client.Room)
+	start = time.Now()
 	err = h.RedisClient.SAdd(h.ctx, roomKey, client.Username).Err()
+	RecordRedisOperation("sadd", getRedisResult(err), time.Since(start))
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to add client to room in Redis")
+		RecordRedisError("sadd", "add_to_room")
 	}
+	
+	start = time.Now()
 	h.RedisClient.Expire(h.ctx, roomKey, 30*time.Second)
+	RecordRedisOperation("expire", "success", time.Since(start))
 
 	log.Info().
 		Str("username", client.Username).
@@ -187,13 +204,27 @@ func (h *Hub) unregisterClient(client *Client) {
 	h.mutex.Unlock()
 
 	if client.Room != "" && client.Username != "" {
+		// Record disconnection
+		RecordDisconnection(Conf.Realm)
+		RecordRoomLeave(Conf.Realm)
+
 		// Remove client info from Redis
 		clientKey := fmt.Sprintf("client:%s:%s", client.Room, client.Username)
-		h.RedisClient.Del(h.ctx, clientKey)
+		start := time.Now()
+		err := h.RedisClient.Del(h.ctx, clientKey).Err()
+		RecordRedisOperation("del", getRedisResult(err), time.Since(start))
+		if err != nil {
+			RecordRedisError("del", "remove_client_info")
+		}
 
 		// Remove client from room set
 		roomKey := fmt.Sprintf("room:%s", client.Room)
-		h.RedisClient.SRem(h.ctx, roomKey, client.Username)
+		start = time.Now()
+		err = h.RedisClient.SRem(h.ctx, roomKey, client.Username).Err()
+		RecordRedisOperation("srem", getRedisResult(err), time.Since(start))
+		if err != nil {
+			RecordRedisError("srem", "remove_from_room")
+		}
 
 		log.Info().
 			Str("username", client.Username).
@@ -268,12 +299,16 @@ func (h *Hub) publishToRedis(channel string, message RedisMessage) {
 	data, err := json.Marshal(message)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to marshal Redis message")
+		RecordRedisError("publish", "marshal_error")
 		return
 	}
 
+	start := time.Now()
 	err = h.RedisClient.Publish(h.ctx, channel, data).Err()
+	RecordRedisOperation("publish", getRedisResult(err), time.Since(start))
 	if err != nil {
 		log.Error().Err(err).Str("channel", channel).Msg("Failed to publish to Redis")
+		RecordRedisError("publish", "publish_error")
 	}
 }
 

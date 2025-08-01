@@ -64,6 +64,12 @@ func main() {
 
 	log.Info().Str("redis_url", config.RedisURL).Msg("Connected to Redis")
 
+	// Initialize metrics if enabled
+	if config.EnableMetrics {
+		InitMetrics(config)
+		StartMetricsServer(config)
+	}
+
 	// Create and start the Redis hub
 	hub := NewHub(redisClient, config.InstanceID)
 	go hub.Run()

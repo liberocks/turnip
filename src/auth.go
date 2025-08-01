@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/rs/zerolog/log"
@@ -22,9 +23,15 @@ type Claims struct {
 
 // AuthenticateWebSocket validates JWT token for WebSocket connection
 func AuthenticateWebSocket(r *http.Request) (string, string, string, error) {
+	start := time.Now()
+	
 	// Get token from query parameter for WebSocket (since headers are limited)
 	tokenString := r.URL.Query().Get("token")
 	if tokenString == "" {
+		RecordAuthAttempt(Conf.Realm, "failed")
+		RecordAuthFailure(Conf.Realm, "token_missing")
+		RecordAuthDuration(Conf.Realm, "failed", time.Since(start))
+		RecordTokenValidation("failed", "token_missing")
 		return "", "", "", jwt.ErrTokenMalformed
 	}
 
@@ -39,11 +46,19 @@ func AuthenticateWebSocket(r *http.Request) (string, string, string, error) {
 
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to parse JWT token")
+		RecordAuthAttempt(Conf.Realm, "failed")
+		RecordAuthFailure(Conf.Realm, "parse_error")
+		RecordAuthDuration(Conf.Realm, "failed", time.Since(start))
+		RecordTokenValidation("failed", "parse_error")
 		return "", "", "", err
 	}
 
 	if !token.Valid {
 		log.Error().Msg("Invalid token")
+		RecordAuthAttempt(Conf.Realm, "failed")
+		RecordAuthFailure(Conf.Realm, "invalid_token")
+		RecordAuthDuration(Conf.Realm, "failed", time.Since(start))
+		RecordTokenValidation("failed", "invalid_token")
 		return "", "", "", jwt.ErrSignatureInvalid
 	}
 
@@ -51,6 +66,10 @@ func AuthenticateWebSocket(r *http.Request) (string, string, string, error) {
 	claims, ok := token.Claims.(*Claims)
 	if !ok {
 		log.Error().Msg("Invalid token claims")
+		RecordAuthAttempt(Conf.Realm, "failed")
+		RecordAuthFailure(Conf.Realm, "invalid_claims")
+		RecordAuthDuration(Conf.Realm, "failed", time.Since(start))
+		RecordTokenValidation("failed", "invalid_claims")
 		return "", "", "", jwt.ErrInvalidKey
 	}
 
@@ -58,10 +77,18 @@ func AuthenticateWebSocket(r *http.Request) (string, string, string, error) {
 	// This ensures only verified users can use the token
 	if claims.IsVerified == "" {
 		log.Error().Msgf("Invalid token [Reason: is_verified not found]")
+		RecordAuthAttempt(Conf.Realm, "failed")
+		RecordAuthFailure(Conf.Realm, "unverified_user")
+		RecordAuthDuration(Conf.Realm, "failed", time.Since(start))
+		RecordTokenValidation("failed", "unverified_user")
 		return "", "", "", jwt.ErrInvalidKey
 	}
 	if claims.IsVerified != "true" {
 		log.Error().Msgf("Invalid token [Reason: is_verified not true]")
+		RecordAuthAttempt(Conf.Realm, "failed")
+		RecordAuthFailure(Conf.Realm, "unverified_user")
+		RecordAuthDuration(Conf.Realm, "failed", time.Since(start))
+		RecordTokenValidation("failed", "unverified_user")
 		return "", "", "", jwt.ErrInvalidKey
 	}
 
@@ -69,10 +96,18 @@ func AuthenticateWebSocket(r *http.Request) (string, string, string, error) {
 	// This prevents tokens from one environment being used in another
 	if claims.Realm == "" {
 		log.Error().Msgf("Invalid token [Reason: realm not found]")
+		RecordAuthAttempt(Conf.Realm, "failed")
+		RecordAuthFailure(Conf.Realm, "realm_missing")
+		RecordAuthDuration(Conf.Realm, "failed", time.Since(start))
+		RecordTokenValidation("failed", "realm_missing")
 		return "", "", "", jwt.ErrInvalidKey
 	}
 	if claims.Realm != Conf.Realm {
 		log.Error().Msgf("Invalid token [Reason: realm mismatch]")
+		RecordAuthAttempt(Conf.Realm, "failed")
+		RecordAuthFailure(Conf.Realm, "realm_mismatch")
+		RecordAuthDuration(Conf.Realm, "failed", time.Since(start))
+		RecordTokenValidation("failed", "realm_mismatch")
 		return "", "", "", jwt.ErrInvalidKey
 	}
 
@@ -80,18 +115,36 @@ func AuthenticateWebSocket(r *http.Request) (string, string, string, error) {
 	// This prevents refresh tokens or other token types from being used for access
 	if claims.Type == "" {
 		log.Error().Msgf("Invalid token [Reason: type not found]")
+		RecordAuthAttempt(Conf.Realm, "failed")
+		RecordAuthFailure(Conf.Realm, "invalid_token_type")
+		RecordAuthDuration(Conf.Realm, "failed", time.Since(start))
+		RecordTokenValidation("failed", "invalid_token_type")
 		return "", "", "", jwt.ErrInvalidKey
 	}
 	if claims.Type != "ACCESS_TOKEN" {
 		log.Error().Msgf("Invalid token [Reason: type not access]")
+		RecordAuthAttempt(Conf.Realm, "failed")
+		RecordAuthFailure(Conf.Realm, "invalid_token_type")
+		RecordAuthDuration(Conf.Realm, "failed", time.Since(start))
+		RecordTokenValidation("failed", "invalid_token_type")
 		return "", "", "", jwt.ErrInvalidKey
 	}
 
 	// Ensure user role is present
 	if claims.Role == "" {
 		log.Error().Msgf("Invalid token [Reason: role not found]")
+		RecordAuthAttempt(Conf.Realm, "failed")
+		RecordAuthFailure(Conf.Realm, "role_missing")
+		RecordAuthDuration(Conf.Realm, "failed", time.Since(start))
+		RecordTokenValidation("failed", "role_missing")
 		return "", "", "", jwt.ErrInvalidKey
 	}
+
+	// Record successful authentication
+	RecordAuthAttempt(Conf.Realm, "success")
+	RecordAuthSuccess(Conf.Realm, claims.UserID)
+	RecordAuthDuration(Conf.Realm, "success", time.Since(start))
+	RecordTokenValidation("success", "valid")
 
 	return claims.Username, claims.UserID, claims.Email, nil
 }
@@ -102,6 +155,7 @@ func GenerateToken(username, userID, email string) (string, error) {
 		UserID:     userID,
 		Email:      email,
 		Username:   username,
+		Role:       "user", // Set default role
 		IsVerified: "true",
 		Type:       "ACCESS_TOKEN",
 		Realm:      Conf.Realm,

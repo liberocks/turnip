@@ -66,8 +66,14 @@ func (c *Client) readPump() {
 			break
 		}
 
+		// Record message received
+		RecordMessageReceived(Conf.Realm, "unknown")
+
 		// Handle different message types
 		if msgType, ok := message["type"].(string); ok {
+			// Record message type specific metrics
+			RecordMessageReceived(Conf.Realm, msgType)
+			
 			switch msgType {
 			case "join":
 				// Handle join message
@@ -76,6 +82,7 @@ func (c *Client) readPump() {
 						c.Username = username
 						c.Room = room
 						c.Hub.Register <- c
+						RecordRoomJoin(Conf.Realm)
 						log.Info().
 							Str("username", username).
 							Str("room", room).
@@ -90,6 +97,15 @@ func (c *Client) readPump() {
 						Str("username", c.Username).
 						Interface("data", data).
 						Msg("Client sent data")
+
+					// Determine signaling message type
+					signalType := "unknown"
+					if dataMap, ok := data.(map[string]interface{}); ok {
+						if msgType, exists := dataMap["type"].(string); exists {
+							signalType = msgType
+						}
+					}
+					RecordSignalingMessage(Conf.Realm, signalType)
 
 					c.Hub.Broadcast <- BroadcastMessage{
 						Room:   c.Room,
@@ -116,6 +132,8 @@ func (c *Client) writePump() {
 			log.Error().Err(err).Msg("Failed to write message")
 			return
 		}
+		// Record message sent
+		RecordMessageSent(Conf.Realm, "outbound")
 	}
 }
 
@@ -135,6 +153,9 @@ func WebSocketHandler(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		log.Error().Err(err).Msg("Failed to upgrade connection")
 		return
 	}
+
+	// Record new connection
+	RecordConnection(Conf.Realm)
 
 	// Create new client
 	client := &Client{
