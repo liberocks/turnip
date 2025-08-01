@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Turnip WebRTC Signaling Test Client</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        max-width: 800px;
+        margin: 0 auto;
+        padding: 20px;
+      }
+      .container {
+        margin-bottom: 20px;
+        padding: 10px;
+        border: 1px solid #ccc;
+        border-radius: 5px;
+      }
+      input,
+      button {
+        margin: 5px;
+        padding: 5px;
+      }
+      #messages {
+        height: 300px;
+        overflow-y: scroll;
+        border: 1px solid #ccc;
+        padding: 10px;
+        background-color: #f9f9f9;
+      }
+      .message {
+        margin-bottom: 5px;
+        padding: 5px;
+        border-radius: 3px;
+      }
+      .system {
+        background-color: #e6f3ff;
+      }
+      .join {
+        background-color: #e6ffe6;
+      }
+      .data {
+        background-color: #f0f8e6;
+      }
+      .error {
+        background-color: #ffe6e6;
+      }
+      .status {
+        padding: 5px;
+        margin: 5px 0;
+        border-radius: 3px;
+        font-weight: bold;
+      }
+      .connected {
+        background-color: #d4edda;
+        color: #155724;
+      }
+      .disconnected {
+        background-color: #f8d7da;
+        color: #721c24;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Turnip WebRTC Signaling Test Client</h1>
+
+    <div class="container">
+      <h3>Connection Settings</h3>
+      <label>
+        Server URL:
+        <input
+          type="text"
+          id="serverUrl"
+          placeholder="Will be auto-detected..."
+        />
+      </label>
+      <br />
+      <label>
+        Username:
+        <input type="text" id="username" placeholder="Enter username" />
+      </label>
+      <br />
+      <label>
+        Room:
+        <input type="text" id="room" placeholder="Enter room name" />
+      </label>
+      <br />
+      <label>
+        JWT Token:
+        <input
+          type="text"
+          id="jwtToken"
+          placeholder="Enter JWT token"
+          style="width: 400px"
+        />
+      </label>
+      <button onclick="generateToken()">Generate Token</button>
+      <br />
+      <button onclick="connect()">Connect</button>
+      <button onclick="disconnect()">Disconnect</button>
+      <div id="connectionStatus" class="status disconnected">Disconnected</div>
+    </div>
+
+    <div class="container">
+      <h3>Send Data</h3>
+      <input
+        type="text"
+        id="dataInput"
+        placeholder="Enter data to send"
+        style="width: 300px"
+      />
+      <button onclick="sendData()">Send Data</button>
+    </div>
+
+    <div class="container">
+      <h3>Messages</h3>
+      <button onclick="clearMessages()">Clear Messages</button>
+      <div id="messages"></div>
+    </div>
+
+    <script>
+      let ws = null;
+      let isConnected = false;
+
+      // Dynamically set the server URL based on current page location
+      function getDefaultServerUrl() {
+        const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+        const host = window.location.host;
+        return `${protocol}//${host}/ws`;
+      }
+
+      // Initialize the server URL field on page load
+      document.addEventListener("DOMContentLoaded", function () {
+        const serverUrlInput = document.getElementById("serverUrl");
+        if (
+          !serverUrlInput.value ||
+          serverUrlInput.value === "ws://localhost:5004/ws"
+        ) {
+          serverUrlInput.value = getDefaultServerUrl();
+        }
+      });
+
+      function addMessage(text, type = "system") {
+        const messages = document.getElementById("messages");
+        const messageDiv = document.createElement("div");
+        messageDiv.className = `message ${type}`;
+        messageDiv.innerHTML = `<strong>[${new Date().toLocaleTimeString()}]</strong> ${text}`;
+        messages.appendChild(messageDiv);
+        messages.scrollTop = messages.scrollHeight;
+      }
+
+      function updateConnectionStatus(connected) {
+        const status = document.getElementById("connectionStatus");
+        isConnected = connected;
+        if (connected) {
+          status.textContent = "Connected";
+          status.className = "status connected";
+        } else {
+          status.textContent = "Disconnected";
+          status.className = "status disconnected";
+        }
+      }
+
+      function generateToken() {
+        const username = document.getElementById("username").value;
+        const serverUrl = document.getElementById("serverUrl").value;
+
+        if (!username) {
+          addMessage("Please enter a username first", "error");
+          return;
+        }
+
+        // Extract base URL from WebSocket URL
+        const baseUrl = serverUrl
+          .replace("ws://", "http://")
+          .replace("wss://", "https://")
+          .replace("/ws", "");
+
+        fetch(`${baseUrl}/generate-token`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ username: username }),
+        })
+          .then((response) => response.json())
+          .then((data) => {
+            if (data.token) {
+              document.getElementById("jwtToken").value = data.token;
+              addMessage(`Generated token for user: ${username}`, "system");
+            } else {
+              addMessage("Failed to generate token", "error");
+            }
+          })
+          .catch((error) => {
+            addMessage(`Error generating token: ${error.message}`, "error");
+          });
+      }
+
+      function connect() {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          addMessage("Already connected!", "error");
+          return;
+        }
+
+        const serverUrl = document.getElementById("serverUrl").value;
+        const username = document.getElementById("username").value;
+        const room = document.getElementById("room").value;
+        const jwtToken = document.getElementById("jwtToken").value;
+
+        if (!username || !room || !jwtToken) {
+          addMessage("Please fill in username, room, and JWT token", "error");
+          return;
+        }
+
+        try {
+          // Add JWT token as query parameter or header
+          const urlWithAuth = `${serverUrl}?token=${encodeURIComponent(
+            jwtToken
+          )}`;
+          ws = new WebSocket(urlWithAuth);
+
+          ws.onopen = function () {
+            addMessage("Connected to server");
+            updateConnectionStatus(true);
+
+            // Send join message
+            const joinMessage = {
+              type: "join",
+              username: username,
+              room: room,
+            };
+            ws.send(JSON.stringify(joinMessage));
+            addMessage(`Joining room: ${room} as ${username}`);
+          };
+
+          ws.onmessage = function (event) {
+            try {
+              const message = JSON.parse(event.data);
+              if (message.type === "ready") {
+                addMessage(
+                  `User ${message.data.username} is ready in the room`,
+                  "system"
+                );
+              } else if (message.type === "user_joined") {
+                addMessage(
+                  `User ${message.data.username} joined the room`,
+                  "join"
+                );
+              } else if (message.type === "user_left") {
+                addMessage(
+                  `User ${message.data.username} left the room`,
+                  "error"
+                );
+              } else if (message.type === "data") {
+                addMessage(
+                  `Data received: ${JSON.stringify(message.data)}`,
+                  "data"
+                );
+              } else {
+                addMessage(`Received: ${JSON.stringify(message)}`, "system");
+              }
+            } catch (e) {
+              addMessage(`Raw message: ${event.data}`, "system");
+            }
+          };
+
+          ws.onclose = function (event) {
+            addMessage(`Connection closed (code: ${event.code})`);
+            updateConnectionStatus(false);
+          };
+
+          ws.onerror = function (error) {
+            addMessage(`WebSocket error: ${error}`, "error");
+            updateConnectionStatus(false);
+          };
+        } catch (error) {
+          addMessage(`Connection error: ${error.message}`, "error");
+        }
+      }
+
+      function disconnect() {
+        if (ws) {
+          ws.close();
+          ws = null;
+          addMessage("Disconnected");
+          updateConnectionStatus(false);
+        }
+      }
+
+      function sendData() {
+        if (!isConnected || !ws || ws.readyState !== WebSocket.OPEN) {
+          addMessage("Not connected to server", "error");
+          return;
+        }
+
+        const dataInput = document.getElementById("dataInput");
+        const data = dataInput.value.trim();
+
+        if (!data) {
+          addMessage("Please enter some data to send", "error");
+          return;
+        }
+
+        const message = {
+          type: "data",
+          data: data,
+        };
+
+        ws.send(JSON.stringify(message));
+        addMessage(`Sent: ${data}`, "data");
+        dataInput.value = "";
+      }
+
+      function clearMessages() {
+        document.getElementById("messages").innerHTML = "";
+      }
+
+      // Allow Enter key to send data
+      document
+        .getElementById("dataInput")
+        .addEventListener("keypress", function (e) {
+          if (e.key === "Enter") {
+            sendData();
+          }
+        });
+
+      // Initial setup
+      updateConnectionStatus(false);
+      addMessage(
+        "Test client loaded. Configure connection settings and click Connect."
+      );
+    </script>
+  </body>
+</html>

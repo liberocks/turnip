@@ -1,0 +1,58 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  turnip-signaling-1:
+    build: .
+    ports:
+      - "5004:5004"
+    environment:
+      - ACCESS_SECRET=your-super-secret-jwt-key-change-this-in-production
+      - PORT=5004
+      - PUBLIC_IP=0.0.0.0
+      - LOG_LEVEL=info
+      - VERSION=1.0.0
+      - ENVIRONMENT=production
+      - REDIS_URL=redis://redis:6379
+      - REDIS_DB=0
+      - INSTANCE_ID=signaling-instance-1
+    depends_on:
+      - redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5004/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  turnip-signaling-2:
+    build: .
+    ports:
+      - "5005:5005"
+    environment:
+      - ACCESS_SECRET=your-super-secret-jwt-key-change-this-in-production
+      - PORT=5005
+      - PUBLIC_IP=0.0.0.0
+      - LOG_LEVEL=info
+      - VERSION=1.0.0
+      - ENVIRONMENT=production
+      - REDIS_URL=redis://redis:6379
+      - REDIS_DB=0
+      - INSTANCE_ID=signaling-instance-2
+    depends_on:
+      - redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5005/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
