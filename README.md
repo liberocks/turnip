@@ -1,183 +1,151 @@
-# Turnip WebRTC Signaling Server
+# Turnip
 
-A secure WebRTC signaling server written in Go with JWT authentication and Redis-based multi-instance support. This server facilitates WebRTC peer-to-peer connections by handling signaling messages between clients across multiple server instances.
+Turnip is a small, authenticated WebRTC signaling relay for applications that need multi-instance room presence without running media through the server. It validates room-scoped JWTs, tracks short-lived connection leases in Redis, and relays ephemeral JSON signals to a specific participant.
 
-## Features
+Turnip does **not** provide STUN/TURN, media transport, message persistence, or guaranteed delivery.
 
-- **JWT Authentication**: Secure WebSocket connections using JWT tokens
-- **Multi-Instance Support**: Redis-based distributed signaling across multiple server instances
-- **Room-based Communication**: Clients can join specific rooms for isolated signaling
-- **Room Lifecycle Management**: Automatic room disbandment events when the last member leaves
-- **WebSocket Support**: Real-time bidirectional communication
-- **Redis Pub/Sub**: Distributed messaging between server instances
-- **Prometheus Metrics**: Comprehensive metrics for monitoring and observability
-- **Configurable**: Environment-based configuration
-- **Logging**: Structured logging with zerolog
-- **Health Checks**: Built-in health check endpoint
-- **Graceful Shutdown**: Proper cleanup of resources and connections
+## Quick start
 
-## Architecture
+Requirements: Docker with Compose, or Go 1.25.13+ and Redis 7.4+.
 
-The server supports multi-instance deployment where clients can connect to different server instances while still communicating within the same rooms. This is achieved through:
+```sh
+cp .env.example .env
+docker compose up -d --build
+make token SUBJECT=alice ROOM=demo NAME=Alice
+make token SUBJECT=bob ROOM=demo NAME=Bob
+```
 
-- **Redis Pub/Sub**: Messages are distributed across instances via Redis channels
-- **Distributed State**: Client and room information is stored in Redis with TTL
-- **Instance Identification**: Each server instance has a unique ID to prevent message loops
-- **Automatic Cleanup**: Expired client sessions are automatically cleaned up
+Open [http://localhost:8080](http://localhost:8080) in two tabs. Put one token in each tab and connect one tab to `ws://localhost:5004/v1/ws` and the other to `ws://localhost:5005/v1/ws`. The two server instances share Redis but do not require sticky sessions.
 
-## Room Lifecycle Management
+The Compose demo exposes application ports 5004 and 5005, metrics on loopback ports 9090 and 9091, and the development client on 8080. Redis is not exposed to the host.
 
-### Room Disbandment
+To run the binary directly:
 
-When the last member leaves a room, the server automatically sends a `room_disbanded` event to all remaining clients before the room is removed. This allows clients to gracefully handle room cleanup and notify users appropriately.
+```sh
+cp .env.example .env
+docker run --rm -p 127.0.0.1:6379:6379 redis:7.4-alpine
+make build
+./bin/turnip
+```
 
-#### Event Structure
+The Makefile loads `.env` when it exists.
+
+## Authentication
+
+`GET /v1/ws` requires an external HS256 JWT. Native clients may send `Authorization: Bearer <JWT>`; browser clients may use `?token=<JWT>`. If both are present they must match.
+
+Required claims:
+
+| Claim | Meaning |
+| --- | --- |
+| `sub` | Stable user subject. Room ownership is tied to this value. |
+| `iss` | Must equal `TURNIP_JWT_ISSUER`. |
+| `aud` | Must contain `TURNIP_JWT_AUDIENCE`. |
+| `exp` | Required expiration time. A 30-second clock skew is allowed. |
+| `room_id` | Authorized room, matching `[A-Za-z0-9_-]{1,128}`. |
+| `name` | Optional display name, at most 80 Unicode characters. |
+
+`nbf` is honored when present. Only HS256 is accepted. The development token command creates 15-minute tokens by default:
+
+```sh
+make token SUBJECT=alice ROOM=demo NAME=Alice
+go run ./cmd/turnip-token -subject alice -room demo -name Alice -lifetime 10m
+```
+
+Query-string credentials can appear in proxy access logs. Internet deployments must use WSS, short token lifetimes, and query redaction. Turnip never logs tokens or signaling payloads.
+
+## Protocol v1
+
+Authentication joins the authorized room immediately. The server assigns a new participant ID to every WebSocket connection. A subject may have multiple simultaneous connections.
+
+Every client message needs an `id` containing 1–64 letters, digits, `.`, `_`, `:`, or `-`.
+
+Targeted signal:
 
 ```json
 {
-  "type": "room_disbanded",
+  "id": "offer-1",
+  "type": "signal",
   "data": {
-    "room": "room-name",
-    "reason": "last_member_left"
+    "to": "target-participant-id",
+    "payload": { "kind": "offer", "sdp": "opaque application data" }
   }
 }
 ```
 
-#### Event Flow
+Owner disband request:
 
-1. Client leaves a room (WebSocket disconnection or explicit leave)
-2. Server checks if this was the last member in the room
-3. If room becomes empty, server sends `room_disbanded` event to all instances
-4. All connected clients in other instances receive the disbandment notification
-5. Room data is cleaned up from Redis
-
-This feature ensures that clients can:
-- Display appropriate notifications when rooms are closed
-- Clean up local room state
-- Redirect users to lobby or other rooms
-- Log room lifecycle events for analytics
-
-#### Testing Room Disbandment
-
-To test the room disbanded feature, see [TESTING_ROOM_DISBANDED.md](TESTING_ROOM_DISBANDED.md) for detailed instructions, or run:
-
-```bash
-./demo_room_disbanded.sh
+```json
+{ "id": "close-1", "type": "disband_room", "data": {} }
 ```
 
-## Quick Start
+Server event types:
 
-### Prerequisites
+- `ready`: room ID, caller participant ID, owner flag, and active participant snapshot.
+- `participant_joined` / `participant_left`: participant ID, optional name, and owner flag.
+- `signal`: server-derived sender participant ID, request ID, and opaque payload.
+- `room_disbanded`: reason and initiating owner participant ID, followed by WebSocket close code `4001`.
+- `error`: stable code, safe message, and related request ID when available.
 
-- Go 1.21 or higher
-- Redis 6.0 or higher
-- Git
+Signals are delivered at most once through Redis Pub/Sub. A target that has disconnected or whose 90-second lease expired returns `participant_not_found`. Messages are limited to 64 KiB, rooms to 32 live connections, and each connection to 50 messages per second with a burst of 100.
 
-### Installation
+The first subject to join a missing room becomes its owner. If that owner disconnects while members remain, ownership stays with the subject and is restored on reconnect. The room disappears when its final lease is removed. Only the owner can manually disband it.
 
-1. Clone the repository:
-```bash
-git clone <your-repo-url>
-cd turnip
-```
-
-2. Install dependencies:
-```bash
-make deps
-```
-
-3. Configure environment variables:
-```bash
-cp .env.example .env
-# Edit .env with your configuration
-```
-
-### Running with Docker Compose (Recommended)
-
-The easiest way to run the multi-instance setup is with Docker Compose:
-
-```bash
-# Start Redis and two signaling server instances
-docker-compose up
-
-# This will start:
-# - Redis on port 6379
-# - Signaling instance 1 on port 5004
-# - Signaling instance 2 on port 5005
-```
-
-### Running Locally
-
-1. Start Redis:
-```bash
-# Using Docker
-docker run -d -p 6379:6379 redis:7-alpine
-
-# Or install Redis locally
-# macOS: brew install redis && brew services start redis
-# Ubuntu: sudo apt install redis-server && sudo systemctl start redis
-```
-
-2. Run the server:
-```bash
-# Development mode with hot reload
-make dev
-
-# Or build and run
-make build
-./tmp/main
-```
-
-### Environment Variables
+## Configuration
 
 | Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `5004` | HTTP server port |
-| `PUBLIC_IP` | `0.0.0.0` | Server bind address |
-| `ACCESS_SECRET` | **Required** | JWT signing secret |
-| `LOG_LEVEL` | `info` | Log level (debug, info, warn, error) |
-| `REDIS_URL` | `redis://localhost:6379` | Redis connection URL |
-| `REDIS_PASSWORD` | `` | Redis password (if required) |
-| `REDIS_DB` | `0` | Redis database number |
-| `INSTANCE_ID` | `hostname` | Unique instance identifier |
-| `THREAD_NUM` | `2*CPU_COUNT` | Number of threads |
-| `ENVIRONMENT` | `` | Environment (production for JSON logs) |
-| `REALM` | `development` | Authentication realm for multi-tenant setups |
-| `ENABLE_METRICS` | `true` | Enable Prometheus metrics |
-| `METRICS_PORT` | `9090` | Metrics server port |
-| `METRICS_AUTH` | `none` | Metrics authentication (`none`, `basic`) |
-| `METRICS_USERNAME` | `` | Basic auth username (if `METRICS_AUTH=basic`) |
-| `METRICS_PASSWORD` | `` | Basic auth password (if `METRICS_AUTH=basic`) |
-| `METRICS_BIND_IP` | `0.0.0.0` | Metrics server bind address |
+| --- | --- | --- |
+| `TURNIP_HTTP_ADDR` | `:5004` | Main HTTP listen address. |
+| `TURNIP_REDIS_URL` | `redis://localhost:6379/0` | Redis URL; `rediss://` is supported. |
+| `TURNIP_INSTANCE_ID` | hostname | Unique server instance ID, 1–128 characters. |
+| `TURNIP_JWT_SECRET` | required | HS256 secret, at least 32 bytes. |
+| `TURNIP_JWT_ISSUER` | required | Required JWT issuer. |
+| `TURNIP_JWT_AUDIENCE` | required | Required JWT audience. |
+| `TURNIP_ALLOWED_ORIGINS` | empty | Comma-separated browser origins. Requests without `Origin` are allowed. `*` is an explicit development-only wildcard. |
+| `TURNIP_METRICS_ADDR` | `127.0.0.1:9090` | Metrics listen address; empty disables metrics. |
+| `TURNIP_METRICS_USERNAME` | empty | Optional Basic Auth username; must be paired with password. |
+| `TURNIP_METRICS_PASSWORD` | empty | Optional Basic Auth password; must be paired with username. |
+| `TURNIP_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, or `error`. |
+| `TURNIP_LOG_FORMAT` | `console` | `console` or `json`. |
+| `TURNIP_VERSION` | `dev` | Runtime version when not injected at build time. |
 
-## Monitoring and Metrics
+Invalid configuration fails before the server starts. Browser origins must be explicitly allowed; native clients without an `Origin` header are accepted.
 
-The server provides comprehensive Prometheus metrics for monitoring:
+## Operations
 
-- **Authentication metrics**: Success rates, failures, and latency
-- **Connection metrics**: Active connections, message throughput
-- **WebRTC signaling metrics**: Room joins/leaves, signaling message types
-- **System metrics**: Memory usage, goroutines, garbage collection
-- **Redis metrics**: Operation latency, error rates
+- `GET /health/live` reports process liveness.
+- `GET /health/ready` requires an initialized Redis subscription and a successful Redis ping.
+- `GET /metrics` is served on the separate metrics address and supports optional Basic Auth.
 
-### Metrics Endpoints
+Prometheus labels are bounded and contain no user, room, token, or payload values. Metrics cover authentication outcomes, local connection counts, messages, room lifecycle observations, dropped messages, Redis latency, readiness failures, and standard Go/process collectors.
 
-- `http://localhost:9090/metrics` - Prometheus metrics
-- `http://localhost:9090/health` - Health check
-- `http://localhost:9090/info` - Server information
+Presence is a Redis lease renewed every 30 seconds and valid for 90 seconds. Instances sweep stale leases, while key expiry provides a backstop. Redis Pub/Sub is intentionally ephemeral: applications must renegotiate after reconnecting.
 
-### Example Monitoring Setup
+On SIGINT or SIGTERM, Turnip stops HTTP acceptance, closes WebSockets, unregisters presence, stops workers, shuts down metrics, and closes Redis within ten seconds.
 
-```bash
-# Start server with metrics enabled
-ENABLE_METRICS=true METRICS_AUTH=basic METRICS_USERNAME=admin METRICS_PASSWORD=secret ./tmp/main
+## Development
 
-# Test metrics endpoint
-curl -u admin:secret http://localhost:9090/metrics
-
-# Run test script to generate sample metrics
-./test_metrics.sh
+```sh
+make deps
+make format
+make test
+make test-race
+make lint
+make vuln
 ```
 
-For detailed metrics documentation, see [METRICS.md](METRICS.md).
- 
+Redis-backed integration tests require a disposable Redis database:
+
+```sh
+docker run --rm -d --name turnip-test-redis -p 127.0.0.1:16379:6379 redis:7.4-alpine
+TURNIP_TEST_REDIS_URL=redis://localhost:16379/15 make test-integration
+docker stop turnip-test-redis
+```
+
+CI runs formatting, vet, lint, race tests, Redis integration tests, vulnerability scanning, and a multi-platform container build. Release tags publish `linux/amd64` and `linux/arm64` images to `ghcr.io/liberocks/turnip` with SBOM and provenance metadata.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution checks and [SECURITY.md](SECURITY.md) for private vulnerability reporting.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
