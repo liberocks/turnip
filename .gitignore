@@ -1,7 +1,8 @@
 
 # Binaries
+bin/
 turnip-signaling
-turnip
+/turnip
 *.exe
 *.exe~
 *.dll
@@ -54,3 +55,6 @@ build-errors.log
 .github/copilot-instructions.md
 
 fly.toml
+
+#Ignore vscode AI rules
+.github/instructions/codacy.instructions.md

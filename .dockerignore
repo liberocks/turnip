@@ -1,0 +1,11 @@
+.git
+.github
+.env
+.env.*
+!.env.example
+bin
+tmp
+*.log
+Dockerfile*
+README.md
+client.html

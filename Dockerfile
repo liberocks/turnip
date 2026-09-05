@@ -1,64 +1,30 @@
-# Build stage
-FROM golang:1.23-alpine AS builder
+# syntax=docker/dockerfile:1.7
+ARG GO_VERSION=1.25.13
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS builder
 
-# Set working directory
-WORKDIR /app
+ARG TARGETOS
+ARG TARGETARCH
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILT_AT=unknown
 
-# Install build dependencies and tools
-RUN apk add --no-cache git ca-certificates tzdata
-
-# Set environment variables for Go modules
-ENV GO111MODULE=on
-ENV GOPROXY=https://proxy.golang.org,direct
-ENV GOSUMDB=sum.golang.org
-
-# Copy go mod files first for better layer caching
+WORKDIR /src
 COPY go.mod go.sum ./
-
-# Download dependencies with retries
 RUN go mod download && go mod verify
+COPY cmd/ ./cmd/
+COPY internal/ ./internal/
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
+    -ldflags="-s -w -X main.version=$VERSION -X main.commit=$COMMIT -X main.builtAt=$BUILT_AT" \
+    -o /out/turnip ./cmd/turnip
 
-# Copy source code and static files
-COPY src/ ./src/
-COPY client.html ./
-
-# Build the application with verbose output
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-    -ldflags='-w -s -extldflags "-static"' \
-    -a -installsuffix cgo \
-    -o turnip ./src
-
-# Runtime stage
-FROM alpine:latest
-
-# Install ca-certificates for HTTPS requests
-RUN apk --no-cache add ca-certificates
-
-# Create non-root user
-RUN addgroup -g 1001 -S appgroup && \
-    adduser -u 1001 -S appuser -G appgroup
-
-# Set working directory
+FROM alpine:3.22
+RUN apk add --no-cache ca-certificates tzdata && \
+    addgroup -g 10001 -S turnip && \
+    adduser -u 10001 -S turnip -G turnip
 WORKDIR /app
-
-# Copy binary from builder stage
-COPY --from=builder /app/turnip .
-
-# Copy test client (optional)
-COPY --from=builder /app/client.html .
-
-# Change ownership to non-root user
-RUN chown -R appuser:appgroup /app
-
-# Switch to non-root user
-USER appuser
-
-# Expose port
-EXPOSE 5004
-
-# Health check
+COPY --from=builder /out/turnip /app/turnip
+USER 10001:10001
+EXPOSE 5004 9090
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:5004/health || exit 1
-
-# Run the application
-CMD ["./turnip"]
+    CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:5004/health/live || exit 1
+ENTRYPOINT ["/app/turnip"]
